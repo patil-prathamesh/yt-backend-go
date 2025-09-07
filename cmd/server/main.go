@@ -7,6 +7,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
 	"github.com/patil-prathamesh/yt-backend-go/api/db"
+	"github.com/patil-prathamesh/yt-backend-go/api/routes"
 )
 
 func init() {
@@ -25,6 +26,8 @@ func main() {
 	}
 
 	app.Use(cors.New(corsConfig))
+
+	routes.SetupRoutes(app)
 
 	app.Run(":" + os.Getenv("PORT"))
 }
