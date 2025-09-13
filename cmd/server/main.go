@@ -1,7 +1,10 @@
 package main
 
 import (
+	"log"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
@@ -12,22 +15,34 @@ import (
 
 func init() {
 	if err := godotenv.Load(); err != nil {
-		panic(err.Error())
-	}
-	db.ConnectDB()
+        log.Println("Warning: .env file not found")
+    }
+    db.ConnectDB()
 }
 
 func main() {
-	app := gin.New()
+    // Graceful shutdown
+    defer db.DisconnectDB()
 
-	corsConfig := cors.Config{
-		AllowOrigins:     []string{os.Getenv("CORS_ORIGIN")},
-		AllowCredentials: true,
-	}
+    app := gin.New()
 
-	app.Use(cors.New(corsConfig))
+    corsConfig := cors.Config{
+        AllowOrigins:     []string{os.Getenv("CORS_ORIGIN")},
+        AllowCredentials: true,
+    }
+    app.Use(cors.New(corsConfig))
 
-	routes.SetupRoutes(app)
+    routes.SetupRoutes(app)
 
-	app.Run(":" + os.Getenv("PORT"))
+    // Handle graceful shutdown
+    c := make(chan os.Signal, 1)
+    signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+    go func() {
+        <-c
+        log.Println("Shutting down gracefully...")
+        db.DisconnectDB()
+        os.Exit(0)
+    }()
+
+    app.Run(":" + os.Getenv("PORT"))
 }

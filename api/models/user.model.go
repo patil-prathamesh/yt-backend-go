@@ -37,6 +37,20 @@ type RefreshTokenClaims struct {
 	jwt.RegisteredClaims
 }
 
+func (u *User) PrepareForDB() {
+    if u.ID.IsZero() {
+        u.ID = primitive.NewObjectID()
+    }
+    
+    now := time.Now()
+    
+    if u.CreatedAt.IsZero() {
+        u.CreatedAt = now
+    }
+    
+    u.UpdatedAt = now
+}
+
 func (u *User) HashPassword(password string) error {
 	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
