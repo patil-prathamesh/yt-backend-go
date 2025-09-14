@@ -4,12 +4,16 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/patil-prathamesh/yt-backend-go/api/db"
 	"github.com/patil-prathamesh/yt-backend-go/api/models"
 	"github.com/patil-prathamesh/yt-backend-go/api/utils"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
@@ -115,4 +119,165 @@ func RegisterUser(c *gin.Context) {
 		"success": true,
 	})
 
+}
+
+type Request struct {
+	Email    string `json:"email"`
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+func LoginUser(c *gin.Context) {
+	// req body -> data
+	// username or email
+	// find the user
+	// password check
+	// access and refresh token
+	// send cookie
+
+	var request Request
+	collection := db.GetCollection("users")
+
+	if err := c.ShouldBindJSON(&request); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid JSON"})
+		return
+	}
+
+	filter := bson.M{
+		"$or": []bson.M{
+			{"email": request.Email},
+			{"username": request.Username},
+		},
+	}
+
+	var user models.User
+	err := collection.FindOne(context.Background(), filter).Decode(&user)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
+		return
+	}
+
+	err = user.IsPasswordCorrect(request.Password)
+
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
+		return
+	}
+
+	accessToken, err := user.GenerateAccessToken()
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate access token"})
+
+		fmt.Println("Access token error:", err.Error())
+		return
+	}
+
+	refreshToken, err := user.GenerateRefreshToken()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate refresh token"})
+
+		fmt.Println("Refresh token error:", err.Error())
+		return
+	}
+
+	collection.UpdateByID(context.Background(), user.ID, bson.M{
+		"$set": bson.M{
+			"refreshToken": refreshToken,
+			"updatedAt":    time.Now(),
+		},
+	})
+
+	c.SetCookie("access_token", accessToken, 3600*1, "/", "", true, true)
+	c.SetCookie("refresh_token", refreshToken, 3600*24*10, "/", "", true, true)
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Login successful",
+		"user": gin.H{
+			"id":          user.ID.Hex(),
+			"username":    user.Username,
+			"email":       user.Email,
+			"accessToken": accessToken,
+		},
+	})
+}
+
+func LogoutUser(c *gin.Context) {
+	id, _ := c.Get("user_id")
+	objectId, _ := primitive.ObjectIDFromHex(fmt.Sprintf("%v", id))
+	fmt.Println(id)
+	collection := db.GetCollection("users")
+	result, err := collection.UpdateByID(context.Background(), objectId, bson.M{
+		"$set": bson.M{
+			"refreshToken": "",
+		},
+	})
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "error while logout"})
+		fmt.Println(err.Error())
+		return
+	}
+
+	c.SetCookie("access_token", "", -1, "/", "", true, true)
+	c.SetCookie("refresh_token", "", -1, "/", "", true, true)
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":        "Logout successful",
+		"modified_count": result.ModifiedCount,
+	})
+}
+
+func RefreshAccessToken(c *gin.Context) {
+	var tokenString string
+	tokenString, _ = c.Cookie("refresh_token")
+	if tokenString == "" {
+		authHeader := c.GetHeader("Authorization")
+		tokenString = strings.Replace(authHeader, "Bearer ", "", 1)
+	}
+
+	if tokenString == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized access"})
+		return
+	}
+
+	secret := os.Getenv("REFRESH_TOKEN_SECRET")
+	if secret == "" {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Server misconfiguration"})
+		return
+	}
+
+	token, err := jwt.ParseWithClaims(tokenString, &models.RefreshTokenClaims{}, func(token *jwt.Token) (interface{}, error) {
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, jwt.ErrSignatureInvalid
+		}
+		return []byte(secret), nil
+	})
+
+	if err != nil || !token.Valid {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid or expired token"})
+		c.Abort()
+		return
+	}
+
+	var id string
+
+	if claims, ok := token.Claims.(*models.RefreshTokenClaims); ok && token.Valid {
+		id = claims.UserID
+	}
+	objectId, _ := primitive.ObjectIDFromHex(fmt.Sprintf("%v", id))
+
+	var user models.User
+	collection := db.GetCollection("users")
+
+	collection.FindOne(context.Background(), bson.M{"_id": objectId}).Decode(&user)
+
+	var accessToken string
+
+	if tokenString == user.RefreshToken {
+		accessToken, _ = user.GenerateAccessToken()
+		c.SetCookie("access_token", accessToken, 3600, "/", "", true, true)
+	}
+
+	c.JSON(200, gin.H{"access_token": accessToken})
 }

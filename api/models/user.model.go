@@ -44,10 +44,12 @@ func (u *User) PrepareForDB() {
     
     now := time.Now()
     
+    // Set CreatedAt only for new records
     if u.CreatedAt.IsZero() {
         u.CreatedAt = now
     }
     
+    // Always update UpdatedAt
     u.UpdatedAt = now
 }
 
