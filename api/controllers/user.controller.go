@@ -121,12 +121,6 @@ func RegisterUser(c *gin.Context) {
 
 }
 
-type Request struct {
-	Email    string `json:"email"`
-	Username string `json:"username"`
-	Password string `json:"password"`
-}
-
 func LoginUser(c *gin.Context) {
 	// req body -> data
 	// username or email
@@ -134,6 +128,12 @@ func LoginUser(c *gin.Context) {
 	// password check
 	// access and refresh token
 	// send cookie
+
+	type Request struct {
+		Email    string `json:"email"`
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
 
 	var request Request
 	collection := db.GetCollection("users")
@@ -280,4 +280,139 @@ func RefreshAccessToken(c *gin.Context) {
 	}
 
 	c.JSON(200, gin.H{"access_token": accessToken})
+}
+
+func ChangeCurrentPassword(c *gin.Context) {
+	type Request struct {
+		OldPassword string `json:"oldPassword"`
+		NewPassword string `json:"newPassword"`
+	}
+
+	var request Request
+	collection := db.GetCollection("users")
+
+	if err := c.ShouldBindJSON(&request); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid JSON"})
+		return
+	}
+
+	userId, _ := c.Get("user_id")
+	userObjectId := fmt.Sprintf("%v", userId)
+
+	var user models.User
+	collection.FindOne(context.Background(), bson.M{"_id": userObjectId}).Decode(&user)
+
+	err := user.IsPasswordCorrect(request.OldPassword)
+
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Incorrect old password"})
+		return
+	}
+
+	result, err := collection.UpdateByID(context.Background(), userObjectId, bson.M{
+		"$set": bson.M{
+			"password": request.NewPassword,
+		},
+	})
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "error while updating password"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "password updated successfully", "count": result.ModifiedCount})
+}
+
+func GetCurrentUser(c *gin.Context) {
+	collection := db.GetCollection("users")
+	userName, _ := c.Get("username")
+	var user models.User
+
+	collection.FindOne(context.Background(), bson.M{"username": userName}).Decode(&user)
+
+	c.JSON(http.StatusOK, gin.H{"message": "Current user fetched succssfully", "data": user})
+}
+
+func UpdateUserAvatar(c *gin.Context) {
+	userName, _ := c.Get("username")
+	collection := db.GetCollection("users")
+	if file, header, err := c.Request.FormFile("avatar"); err == nil {
+		defer file.Close()
+
+		cloudinaryService, err := utils.NewCloudinaryService()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to initialize upload service"})
+			return
+		}
+
+		filename := fmt.Sprintf("avatar_%s_%s", userName, header.Filename)
+		avatarURL, err := cloudinaryService.UploadImage(file, filename)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to upload avatar"})
+			return
+		}
+
+		if avatarURL == "" {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Error while updating avatar"})
+			return
+		}
+
+		result, err := collection.UpdateOne(context.Background(), bson.M{"username": userName}, bson.M{
+			"$set": bson.M{
+				"avatar": avatarURL,
+			},
+		})
+
+		if err != nil || result.MatchedCount == 0 {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Error while updating avatar"})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{"message": "Avatar updated successfully"})
+		return
+	}
+
+	c.JSON(http.StatusBadRequest, gin.H{"error": "Avatar is missing"})
+}
+
+func UpdateUserCoverImage(c *gin.Context) {
+	userName, _ := c.Get("username")
+	collection := db.GetCollection("users")
+	if file, header, err := c.Request.FormFile("avatar"); err == nil {
+		defer file.Close()
+
+		cloudinaryService, err := utils.NewCloudinaryService()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to initialize upload service"})
+			return
+		}
+
+		filename := fmt.Sprintf("cover_%s_%s", userName, header.Filename)
+		coverURL, err := cloudinaryService.UploadImage(file, filename)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to upload cover image"})
+			return
+		}
+
+		if coverURL == "" {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Error while updating cover image"})
+			return
+		}
+
+		result, err := collection.UpdateOne(context.Background(), bson.M{"username": userName}, bson.M{
+			"$set": bson.M{
+				"coverImage": coverURL,
+			},
+		})
+
+		if err != nil || result.MatchedCount == 0 {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Error while updating cover image"})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{"message": "Cover Image updated successfully"})
+		return
+	}
+
+	c.JSON(http.StatusBadRequest, gin.H{"error": "Cover image is missing"})
 }
