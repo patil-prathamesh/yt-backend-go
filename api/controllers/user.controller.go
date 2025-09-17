@@ -14,6 +14,7 @@ import (
 	"github.com/patil-prathamesh/yt-backend-go/api/models"
 	"github.com/patil-prathamesh/yt-backend-go/api/utils"
 	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
@@ -357,6 +358,18 @@ func UpdateUserAvatar(c *gin.Context) {
 			return
 		}
 
+		var user models.User
+
+		collection.FindOne(context.Background(), bson.M{"username": userName}).Decode(&user)
+
+		avatarURLToBeDeleted := user.Avatar
+
+		err = cloudinaryService.DeleteFile(avatarURLToBeDeleted, "image")
+
+		if err != nil {
+			fmt.Println("Error while deleting old avatar....")
+		}
+
 		result, err := collection.UpdateOne(context.Background(), bson.M{"username": userName}, bson.M{
 			"$set": bson.M{
 				"avatar": avatarURL,
@@ -415,4 +428,126 @@ func UpdateUserCoverImage(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusBadRequest, gin.H{"error": "Cover image is missing"})
+}
+
+func GetUserChannelProfile(c *gin.Context) {
+	username := c.Param("username")
+	userID, _ := c.Get("user_id")
+	currentUserID, _ := primitive.ObjectIDFromHex(fmt.Sprintf("%v", userID))
+	if username == "" {
+		c.JSON(400, gin.H{"error": "Username is missing"})
+		return
+	}
+
+	collection := db.GetCollection("users")
+
+	pipeline := mongo.Pipeline{
+		{{"$match", bson.D{{"username", strings.ToLower(username)}}}},
+		{{"$lookup", bson.D{
+			{"from", "subscriptions"},
+			{"localField", "_id"},
+			{"foreignField", "channel"},
+			{"as", "Subscribers"},
+		}}},
+		{{"$lookup", bson.D{
+			{"from", "subscriptions"},
+			{"localField", "_id"},
+			{"foreignField", "subscriber"},
+			{"as", "subscribedTo"},
+		}}},
+		{{"$addFields", bson.D{
+			{"subscriberCount", bson.D{{"$size", "$subscribers"}}},
+			{"channelsSubscribedToCount", bson.D{{"$size", "$subscribedTo"}}},
+			{"isSubscribed", bson.D{
+				{"$cond", bson.A{
+					bson.D{{"$in", bson.A{currentUserID, "$subscribers.subscriber"}}},
+					true,
+					false,
+				}},
+			}},
+		}}},
+		{{"$project", bson.D{
+			{"fullName", 1},
+			{"username", 1},
+			{"avatar", 1},
+			{"subscriberCount", 1},
+			{"channelsSubscribedToCount", 1},
+			{"isSubscribed", 1},
+			{"coverImage", 1},
+			{"email", 1},
+		}}},
+	}
+
+	cursor, err := collection.Aggregate(context.Background(), pipeline)
+	if err != nil {
+		c.JSON(500, gin.H{"error": "Aggregation error"})
+		return
+	}
+	defer cursor.Close(context.Background())
+
+	var results []bson.M
+	if err := cursor.All(context.Background(), &results); err != nil {
+		c.JSON(500, gin.H{"error": "Failed to decode results"})
+		return
+	}
+
+	c.JSON(200, gin.H{"profile": results})
+}
+
+func GetWatchHistory(c *gin.Context) {
+	username, _ := c.Get("username")
+	collection := db.GetCollection("users")
+
+	pipeline := mongo.Pipeline{
+		{
+			{"$match", bson.D{{"username", fmt.Sprintf("%v", username)}}},
+		},
+		{
+			{"$lookup", bson.D{
+				{"from", "videos"},
+				{"localField", "watchHistory"},
+				{"foreignField", "_id"},
+				{"as", "watchHistory"},
+				{"pipeline", bson.A{
+					bson.D{
+						{"$lookup", bson.D{
+							{"from", "users"},
+							{"localField", "owner"},
+							{"foreignField", "_id"},
+							{"as", "owner"},
+							{"pipeline", bson.A{
+								bson.D{
+									{"$project", bson.D{
+										{"fullName", 1},
+										{"username", 1},
+										{"avatar", 1},
+									}},
+								},
+							}},
+						}},
+						{"$addFields", bson.D{
+							{"owner", bson.D{
+								{"$arrayElemAt", bson.A{"$owner", 0}},
+							}},
+						}},
+					},
+				}},
+			}},
+		},
+	}
+
+	cursor, err := collection.Aggregate(context.Background(), pipeline)
+	if err != nil {
+        c.JSON(500, gin.H{"error": "Aggregation error"})
+        return
+    }
+    defer cursor.Close(context.Background())
+
+    var results []bson.M
+    if err := cursor.All(context.Background(), &results); err != nil {
+        c.JSON(500, gin.H{"error": "Failed to decode results"})
+        return
+    }
+
+    c.JSON(200, gin.H{"history": results})
 }
